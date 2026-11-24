@@ -129,6 +129,28 @@ fn test_strict_parse_applied() {
 }
 
 #[test]
+fn test_max_content_chars_applied() {
+    let mut config = ExtractionConfig::default();
+    assert_eq!(config.max_content_chars, None);
+    let overrides = ExtractionOverrides {
+        max_content_chars: Some(2000),
+        ..default_overrides()
+    };
+    overrides.apply(&mut config);
+    assert_eq!(config.max_content_chars, Some(2000));
+}
+
+#[test]
+fn test_validate_max_content_chars_zero() {
+    let overrides = ExtractionOverrides {
+        max_content_chars: Some(0),
+        ..default_overrides()
+    };
+    let err = overrides.validate().unwrap_err();
+    assert!(err.to_string().contains("--max-content-chars must be at least 1"));
+}
+
+#[test]
 fn test_validate_max_concurrent_zero() {
     let overrides = ExtractionOverrides {
         max_concurrent: Some(0),

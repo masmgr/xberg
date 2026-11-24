@@ -34,6 +34,18 @@ pub enum OutputFormat {
     Custom(String),
 }
 
+impl OutputFormat {
+    /// Whether `content` in this format is running text with inline markup (plain, markdown, djot,
+    /// html), which stays readable when cut at a character count. JSON, DocTags and custom
+    /// renderings are structured documents a cut would leave unparseable.
+    pub(crate) fn is_text_rendering(&self) -> bool {
+        matches!(
+            self,
+            OutputFormat::Plain | OutputFormat::Markdown | OutputFormat::Djot | OutputFormat::Html
+        )
+    }
+}
+
 #[cfg(test)]
 impl OutputFormat {
     /// Get the renderer name for this format.

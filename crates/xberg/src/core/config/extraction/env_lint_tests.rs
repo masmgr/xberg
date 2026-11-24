@@ -131,6 +131,33 @@ fn should_accept_case_insensitive_booleans_and_numeric_ocr_flags() {
 }
 
 #[test]
+fn should_apply_a_positive_max_content_chars() {
+    if !run_in_isolated_environment(
+        "should_apply_a_positive_max_content_chars",
+        &[("XBERG_MAX_CONTENT_CHARS", "1200")],
+    ) {
+        return;
+    }
+    let mut config = ExtractionConfig::default();
+    config.apply_env_overrides().expect("a positive integer is valid");
+    assert_eq!(config.max_content_chars, Some(1200));
+}
+
+#[test]
+fn should_reject_a_zero_or_non_numeric_max_content_chars() {
+    if !run_in_isolated_environment(
+        "should_reject_a_zero_or_non_numeric_max_content_chars",
+        &[("XBERG_MAX_CONTENT_CHARS", "0")],
+    ) {
+        return;
+    }
+    let mut config = ExtractionConfig::default();
+    let message = validation_message(config.apply_env_overrides().expect_err("zero is not a limit"));
+    assert!(message.contains("XBERG_MAX_CONTENT_CHARS"), "{message}");
+    assert_eq!(config.max_content_chars, None);
+}
+
+#[test]
 fn should_reject_numeric_cache_flag_before_applying_later_overrides() {
     if !run_in_isolated_environment(
         "should_reject_numeric_cache_flag_before_applying_later_overrides",

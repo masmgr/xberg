@@ -76,6 +76,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 </details>
 
+## [Unreleased]
+
+### Added
+
+- **config:** `max_content_chars` (CLI `--max-content-chars`, env `XBERG_MAX_CONTENT_CHARS`, default unset) caps the extracted `content` at that many Unicode characters. The plain text is cut right after extraction, before post-processing and the LLM stages, and the rendered content again before chunking, so `content` holds at most the limit; `pages`, `elements`, the page boundaries, `tables`, `ocr_elements` and the chunks follow the cut, `document` and `djot_content` are omitted when a cut happens, and a `max_content_chars` processing warning names the first page not fully included. A PDF stops reading pages once the pages read fill the budget: the native text loop stops at the page that fills it, and the OCR page loops (mixed native/OCR and whole-document) stop before the next batch once the pages before it, counted in page order, fill it. Scans among the pages read are still OCR'd. Other formats are read in full and then cut. Only the plain, markdown, djot and html output formats are accepted; an HTML cut never ends inside a tag or character reference. `0` is rejected.
+
 ## [1.5.2] - 2026-11-24
 
 ### Fixed

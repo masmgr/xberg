@@ -31,6 +31,7 @@ impl ExtractionConfig {
     /// - `XBERG_CHUNKING_TOKENIZER`: HuggingFace tokenizer model ID for token-based chunk sizing (requires `chunking-tokenizers` feature)
     /// - `XBERG_DISABLE_OCR`: Disable OCR entirely ("true" or "false")
     /// - `XBERG_STRICT_PARSE`: Fail instead of falling back to plain text when YAML/JSON/TOML/XML parsing fails ("true" or "false")
+    /// - `XBERG_MAX_CONTENT_CHARS`: Maximum number of Unicode characters of the extracted content (positive integer)
     /// - `XBERG_LLM_MODEL`: LLM model for structured extraction (e.g., "openai/gpt-4o")
     /// - `XBERG_LLM_API_KEY`: API key for the structured extraction LLM provider. Applied only
     ///   when structured extraction is already configured — a credential never enables it.
@@ -306,6 +307,18 @@ impl ExtractionConfig {
                     });
                 }
             };
+        }
+
+        if let Ok(val) = std::env::var("XBERG_MAX_CONTENT_CHARS") {
+            let max_chars = val
+                .parse::<usize>()
+                .ok()
+                .filter(|max_chars| *max_chars > 0)
+                .ok_or_else(|| XbergError::Validation {
+                    message: format!("Invalid value for XBERG_MAX_CONTENT_CHARS: '{val}'. Must be a positive integer."),
+                    source: None,
+                })?;
+            self.max_content_chars = Some(max_chars);
         }
         Ok(())
     }

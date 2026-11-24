@@ -4,6 +4,7 @@
 //! quality processing, chunking, and custom hooks in the correct order.
 
 mod cache;
+pub(crate) mod char_budget_cut;
 mod execution;
 pub(crate) mod features;
 mod format;
@@ -12,6 +13,9 @@ mod page_markers;
 
 #[cfg(all(test, feature = "quality"))]
 mod normalization_tests;
+
+#[cfg(all(test, feature = "tokio-runtime"))]
+mod char_budget_cut_tests;
 
 #[cfg(all(test, feature = "quality"))]
 mod nfc_offset_tests;
@@ -796,6 +800,10 @@ async fn run_pipeline_impl(
     result.internal_document = doc_for_elements;
     captioning_carry_over.apply(&mut result);
 
+    // `max_content_chars`, stage 1: before the divergence snapshots below and every stage that
+    // reads the text, so the post-processors and the LLM stages only see what the result keeps. ~keep
+    let char_budget_cut = char_budget_cut::cut_before_processing(&mut result, config);
+
     // GH#1662 reads embedded-image bytes so OCR has something to decode; rendering above
     // (inside `derive_extraction_result`) has already folded any resulting OCR text into
     // `content`. GH#1703: drop the bytes themselves now unless the caller actually wanted
@@ -955,6 +963,10 @@ async fn run_pipeline_impl(
     let output_format = config.output_format.clone();
     let mut result = apply_output_format(result, output_format);
 
+    // `max_content_chars`, stage 2: after the last step that rewrites `content` and before
+    // chunking, so the limit holds for the returned text and the chunks only cover what is kept. ~keep
+    char_budget_cut::apply(&mut result, config, char_budget_cut);
+
     // Chunking runs last, after every step above that rewrites `content` — see the
     // ordering note on this function's doc comment (#213).
     execute_chunking(&mut result, config, chunker_heading_source.as_deref())?;
@@ -1095,6 +1107,9 @@ pub fn run_pipeline_sync(mut doc: InternalDocument, config: &ExtractionConfig) -
     };
     result.internal_document = doc_for_elements;
 
+    // `max_content_chars`, stage 1: mirrors `run_pipeline`. ~keep
+    let char_budget_cut = char_budget_cut::cut_before_processing(&mut result, config);
+
     // #286: mirrors `run_pipeline` — see `discard_diverged_internal_document`.
     let internal_document_source_content = result.internal_document.is_some().then(|| result.content.clone());
 
@@ -1128,6 +1143,9 @@ pub fn run_pipeline_sync(mut doc: InternalDocument, config: &ExtractionConfig) -
     apply_element_transform(&mut result, config);
 
     result = apply_output_format(result, config.output_format.clone());
+
+    // `max_content_chars`, stage 2: mirrors `run_pipeline`. ~keep
+    char_budget_cut::apply(&mut result, config, char_budget_cut);
 
     // Chunking runs last, after every step above that rewrites `content` — see the
     // ordering note on `run_pipeline`'s doc comment (#213).

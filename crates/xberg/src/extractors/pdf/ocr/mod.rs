@@ -241,6 +241,9 @@ fn run_on_ocr_test_stack<F: std::future::Future<Output = ()>>(
         .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
 }
 
+#[cfg(all(test, feature = "pdf"))]
+pub(crate) mod test_pdfs;
+
 #[cfg(all(test, feature = "ocr"))]
 mod tests;
 #[cfg(all(test, feature = "ocr", feature = "pdf"))]

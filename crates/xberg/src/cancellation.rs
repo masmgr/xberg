@@ -75,13 +75,19 @@ pub struct CancellationToken {
     stop: Arc<StopState>,
 }
 
-/// Soft-stop state of one timed extraction.
+/// Soft-stop state of one extraction.
 ///
-/// A soft stop is the extraction time limit asking page loops to finish the page in hand and
-/// return what they hold, where [`CancellationToken::cancel`] makes them fail. It is internal:
-/// only the timeout wrapper requests it and only page loops observe it. A timed extraction
-/// works on a [`scoped`](CancellationToken::scoped) token, so a caller's token that is reused
-/// for another extraction never carries it over.
+/// A soft stop ends a page loop before its last page and returns the pages it holds, where
+/// [`CancellationToken::cancel`] makes it fail. Two limits cause one:
+///
+/// - The extraction time limit: only the timeout wrapper requests it and only page loops observe
+///   it.
+/// - `ExtractionConfig::max_content_chars`: each page loop counts it itself
+///   (`core::char_budget::PageOrderBudget`) and records here only the first page it left unread,
+///   apart from the time-limit page, for the `max_content_chars` warning.
+///
+/// An extraction with either limit works on a [`scoped`](CancellationToken::scoped) token, so a
+/// caller's token that is reused for another extraction never carries this state over.
 // Read only by the page loops and the timeout wrapper, which are feature-gated; a build with
 // neither has no reader. ~keep
 #[cfg_attr(
@@ -107,6 +113,10 @@ struct StopState {
     first_unread_page: AtomicU32,
     deadline: OnceLock<Instant>,
     stage_cut: AtomicBool,
+    /// The lowest page (1-based) a page loop left unread because the pages before it fill
+    /// `max_content_chars`. Kept apart from `first_unread_page` so the time-limit warning never
+    /// names it.
+    first_page_past_char_budget: AtomicU32,
 }
 
 impl Default for StopState {
@@ -117,6 +127,7 @@ impl Default for StopState {
             first_unread_page: AtomicU32::new(NO_UNREAD_PAGE),
             deadline: OnceLock::new(),
             stage_cut: AtomicBool::new(false),
+            first_page_past_char_budget: AtomicU32::new(NO_UNREAD_PAGE),
         }
     }
 }
@@ -258,6 +269,32 @@ impl CancellationToken {
             page => Some(page),
         }
     }
+
+    /// Record that a page loop stopped before reading `page` (1-based) because the pages before it
+    /// fill `max_content_chars`. The lowest page wins.
+    #[cfg(any(test, feature = "pdf"))]
+    pub(crate) fn note_page_past_char_budget(&self, page: u32) {
+        self.stop.first_page_past_char_budget.fetch_min(page, Ordering::Relaxed);
+    }
+
+    /// The lowest page (1-based) a page loop left unread because the pages before it fill
+    /// `max_content_chars`.
+    pub(crate) fn first_page_past_char_budget(&self) -> Option<u32> {
+        match self.stop.first_page_past_char_budget.load(Ordering::Relaxed) {
+            NO_UNREAD_PAGE => None,
+            page => Some(page),
+        }
+    }
+
+    /// The lowest page (1-based) any page loop left unread, for the time limit or the character
+    /// budget: the pages from it on are empty placeholders, not pages without text.
+    #[cfg(any(test, feature = "pdf"))]
+    pub(crate) fn first_page_left_unread(&self) -> Option<u32> {
+        match (self.first_unread_page(), self.first_page_past_char_budget()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
+    }
 }
 
 pub(crate) fn check_cancelled(token: Option<&CancellationToken>) -> crate::Result<()> {
@@ -358,6 +395,27 @@ mod tests {
         assert!(scoped.is_cancelled());
         let next_extraction = caller.scoped();
         assert!(!next_extraction.stop_requested());
+    }
+
+    #[test]
+    fn the_char_budget_page_stays_apart_from_the_time_limit_and_the_caller() {
+        let caller = CancellationToken::new();
+        let scoped = caller.scoped();
+
+        scoped.note_page_past_char_budget(6);
+        scoped.note_page_past_char_budget(4);
+        assert_eq!(scoped.first_page_past_char_budget(), Some(4), "the lowest page wins");
+        assert_eq!(scoped.first_unread_page(), None, "the time-limit page must stay unset");
+        assert!(!scoped.cut_short_by_time_limit());
+        assert_eq!(scoped.first_page_left_unread(), Some(4));
+
+        scoped.note_unread_page(2);
+        assert_eq!(scoped.first_page_left_unread(), Some(2), "either reason counts");
+        assert_eq!(
+            caller.first_page_past_char_budget(),
+            None,
+            "the caller's token carries nothing"
+        );
     }
 
     #[test]

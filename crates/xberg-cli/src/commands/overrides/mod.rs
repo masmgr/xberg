@@ -196,6 +196,11 @@ pub struct ExtractionOverrides {
     #[arg(long)]
     pub strict_parse: Option<bool>,
 
+    /// Stop extraction once the content holds this many Unicode characters, and return the text
+    /// cut at exactly this length with a `max_content_chars` warning.
+    #[arg(long)]
+    pub max_content_chars: Option<usize>,
+
     /// For Jupyter notebooks: render code cells as source, outputs, or both (default: both).
     /// Cells are never executed — outputs come only from those saved in the notebook.
     #[arg(long, value_enum)]
@@ -432,6 +437,7 @@ impl ExtractionOverrides {
         #[cfg(feature = "pdf-surface")]
         self.validate_pdf_backend()?;
         self.validate_csv()?;
+        self.validate_max_content_chars()?;
         Ok(())
     }
 
@@ -452,6 +458,7 @@ impl ExtractionOverrides {
         self.apply_output_format(config);
         self.apply_include_structure(config);
         self.apply_strict_parse(config);
+        self.apply_max_content_chars(config);
         self.apply_jupyter_cell_rendering(config);
         self.apply_layout(config);
         self.apply_acceleration(config);

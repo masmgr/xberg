@@ -268,6 +268,7 @@ fn test_extraction_config_no_unknown_fields_in_default() {
         "mime_detection_policy",
         "strict_parse",
         "extraction_timeout_secs",
+        "max_content_chars",
         "tree_sitter",
         "use_layout_for_markdown",
         "transcription",

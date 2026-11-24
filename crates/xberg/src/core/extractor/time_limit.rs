@@ -1,10 +1,12 @@
-//! The `extraction_timeout_secs` handling shared by the file and bytes routes.
+//! The `extraction_timeout_secs` handling shared by the file and bytes routes, and the scoped token
+//! that it and `max_content_chars` give each extraction.
 //!
 //! These are plain functions, not one generic async wrapper: the callers' future types are
 //! already deep enough that adding another async layer to them overflows rustc's auto-trait
 //! recursion limit (E0275) when `extract` is type-erased to `dyn Future + Send`. ~keep
 
 use crate::cancellation::CancellationToken;
+use crate::core::config::ExtractionConfig;
 use crate::types::ExtractedDocument;
 use crate::{Result, XbergError};
 use std::time::{Duration, Instant};
@@ -18,6 +20,25 @@ use std::time::{Duration, Instant};
 pub(crate) const PARTIAL_RESULT_GRACE: Duration = Duration::from_secs(10);
 
 const WARNING_SOURCE: &str = "timeout";
+
+/// `config` with a cancellation token of its own, armed for the time limit, when it sets a limit
+/// that stops page loops early (`extraction_timeout_secs` or `max_content_chars`); `None` otherwise.
+///
+/// The token is [`scoped`](CancellationToken::scoped): it shares the caller's cancellation but has
+/// its own soft-stop state, so a caller's token reused for another extraction never starts out
+/// stopped or carries the pages a limit left unread.
+pub(super) fn scoped_config(config: &ExtractionConfig) -> Option<ExtractionConfig> {
+    if config.extraction_timeout_secs.is_none() && config.max_content_chars.is_none() {
+        return None;
+    }
+    let mut owned = config.clone();
+    owned.ensure_cancel_token();
+    owned.cancel_token = owned.cancel_token.as_ref().map(CancellationToken::scoped);
+    if let Some(secs) = owned.extraction_timeout_secs {
+        arm(owned.cancel_token.as_ref(), secs);
+    }
+    Some(owned)
+}
 
 /// Starts the limit on `token`: records its deadline for the post-processing stages that check it
 /// between batches (a model call that never yields keeps the timeout future from firing).

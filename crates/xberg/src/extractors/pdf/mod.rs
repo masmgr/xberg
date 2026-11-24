@@ -406,6 +406,9 @@ struct NativeBlockingOutput {
 /// The pages it did read are the result. The pages after it are unread, not pages without a text
 /// layer, so no OCR route may take them for scans: with the stop in force it would read none of
 /// them and fail the call, losing the pages already read.
+///
+/// A `max_content_chars` stop is not one: OCR routing still runs so the scans among the pages read
+/// are OCR'd, and every OCR loop stops at the budget in page order.
 #[cfg(all(feature = "pdf", any(feature = "ocr", feature = "ocr-pipeline")))]
 fn native_text_stopped_by_time_limit(config: &ExtractionConfig) -> bool {
     #[cfg(all(feature = "tokio-runtime", not(target_arch = "wasm32")))]

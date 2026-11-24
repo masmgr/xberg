@@ -60,6 +60,14 @@ impl ExtractionOverrides {
         Ok(())
     }
 
+    /// Reject `--max-content-chars 0`: omit the flag for no limit.
+    pub(super) fn validate_max_content_chars(&self) -> Result<()> {
+        if let Some(0) = self.max_content_chars {
+            bail!("--max-content-chars must be at least 1");
+        }
+        Ok(())
+    }
+
     /// Reject an invalid `--csv-delimiter` value.
     pub(super) fn validate_csv(&self) -> Result<()> {
         if let Some(ref delimiter) = self.csv_delimiter

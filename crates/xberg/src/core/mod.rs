@@ -30,6 +30,9 @@
 
 #[cfg(feature = "tokio-runtime")]
 pub(crate) mod batch_mode;
+/// `max_content_chars` as the page loops count it.
+#[cfg(feature = "pdf")]
+pub(crate) mod char_budget;
 pub mod config;
 pub mod config_validation;
 // Unconditional: every extractor that reports partial extraction goes through

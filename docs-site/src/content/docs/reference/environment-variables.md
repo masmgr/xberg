@@ -295,6 +295,19 @@ limit trips on a text-like input. When `false`, such input is extracted as plain
 export XBERG_STRICT_PARSE=true
 ```
 
+### XBERG_MAX_CONTENT_CHARS
+
+**Type**: `usize` (positive integer)
+**Default**: unset (no limit)
+
+Maximum number of Unicode characters of the extracted `content`. Longer text is cut at exactly this length and a
+`max_content_chars` warning is added to `processing_warnings`. A PDF stops reading pages once the budget is filled.
+Only the plain, markdown, djot and html output formats are accepted. `0` or a non-numeric value is rejected.
+
+```bash title="Keep the first 10,000 characters"
+export XBERG_MAX_CONTENT_CHARS=10000
+```
+
 ### XBERG_CHUNKING_MAX_CHARS
 
 **Type**: `usize` (positive integer)

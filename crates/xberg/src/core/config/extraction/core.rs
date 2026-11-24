@@ -218,6 +218,24 @@ pub struct ExtractionConfig {
     #[serde(default = "ExtractionConfig::default_extraction_timeout")]
     pub extraction_timeout_secs: Option<u64>,
 
+    /// Maximum number of Unicode characters (`char`s) of the extracted `content`.
+    ///
+    /// When the document holds more text, PDF page loops stop reading once the pages read fill the
+    /// budget (native text at the page that fills it, OCR before the next batch, counted in page
+    /// order), and the result is cut at this many characters: the plain text before
+    /// post-processing and the LLM stages, the rendered content again before chunking. `pages`,
+    /// `elements`, the page boundaries, `tables`, `ocr_elements` and the chunks follow the cut;
+    /// `document` and `djot_content` are omitted when a cut happens. A `max_content_chars`
+    /// processing warning names the limit and the first page that was not fully included. Other
+    /// formats are read in full and then cut.
+    ///
+    /// Only the plain, markdown, djot and html output formats are accepted. An HTML cut never ends
+    /// inside a tag or character reference, so it may keep fewer characters.
+    ///
+    /// `None` (the default) means no limit. `Some(0)` is rejected.
+    #[serde(default)]
+    pub max_content_chars: Option<usize>,
+
     /// Maximum concurrent document extractions in batch operations.
     ///
     /// This is a ceiling within the configured total thread budget, not an
@@ -638,6 +656,7 @@ impl Default for ExtractionConfig {
             #[cfg(feature = "html")]
             html_output: None,
             extraction_timeout_secs: ExtractionConfig::default_extraction_timeout(),
+            max_content_chars: None,
             max_concurrent_extractions: None,
             security_limits: None,
             max_embedded_file_bytes: ExtractionConfig::default_max_embedded_file_bytes(),
@@ -727,15 +746,18 @@ impl ExtractionConfig {
     /// A caller-supplied token is always left untouched, so Rust callers and the
     /// REST cancellation path continue observing the same shared token.
     ///
-    /// No-op when `extraction_timeout_secs` is `None`: without an internal timeout
-    /// path there is no need to allocate a fallback token. Callers may still supply
+    /// `max_content_chars` also needs a token: the PDF page loops count the characters
+    /// they read on it and stop once the budget is full.
+    ///
+    /// No-op when both `extraction_timeout_secs` and `max_content_chars` are `None`:
+    /// without either there is no need to allocate a fallback token. Callers may still supply
     /// their own token for explicit cancellation.
     ///
     /// Unconditional on target/feature: the token and its atomic operations are
     /// available on every target, including wasm32. Timeout call sites remain gated
     /// independently where runtime support requires it.
     pub(crate) fn ensure_cancel_token(&mut self) {
-        if self.extraction_timeout_secs.is_some() && self.cancel_token.is_none() {
+        if (self.extraction_timeout_secs.is_some() || self.max_content_chars.is_some()) && self.cancel_token.is_none() {
             self.cancel_token = Some(crate::cancellation::CancellationToken::default());
         }
     }
@@ -1132,6 +1154,36 @@ impl ExtractionConfig {
             validate_csv_delimiter(delimiter)?;
         }
 
+        self.validate_max_content_chars()?;
+
+        Ok(())
+    }
+
+    /// Reject a `max_content_chars` the extraction cannot honour: `0` (omit the field for no limit),
+    /// or an output format whose `content` is a structured document (JSON, DocTags, a custom
+    /// renderer) that a cut at a character count would leave unparseable.
+    ///
+    /// The extraction entry points call this as well as [`validate`](Self::validate), since a Rust
+    /// caller can reach them without validating the config.
+    pub(crate) fn validate_max_content_chars(&self) -> Result<(), crate::XbergError> {
+        let Some(max_chars) = self.max_content_chars else {
+            return Ok(());
+        };
+        if max_chars == 0 {
+            return Err(crate::XbergError::Validation {
+                message: "max_content_chars must be greater than 0 (omit it for no limit)".to_string(),
+                source: None,
+            });
+        }
+        if !self.output_format.is_text_rendering() {
+            return Err(crate::XbergError::Validation {
+                message: format!(
+                    "max_content_chars supports the plain, markdown, djot and html output formats, not {}",
+                    self.output_format
+                ),
+                source: None,
+            });
+        }
         Ok(())
     }
 
@@ -1963,6 +2015,46 @@ mod tests {
         let html_output = resolved.html_output.expect("html output override should apply");
         assert_eq!(html_output.css.as_deref(), Some(".kb-p { color: red; }"));
         assert!(!html_output.embed_css);
+    }
+
+    #[test]
+    fn validate_rejects_a_zero_max_content_chars_and_accepts_a_positive_one() {
+        let zero = ExtractionConfig {
+            max_content_chars: Some(0),
+            ..Default::default()
+        };
+        assert!(matches!(zero.validate(), Err(crate::XbergError::Validation { .. })));
+
+        for format in [
+            OutputFormat::Json,
+            OutputFormat::DocTags,
+            OutputFormat::Custom("docx".into()),
+        ] {
+            let structured = ExtractionConfig {
+                max_content_chars: Some(10),
+                output_format: format.clone(),
+                ..Default::default()
+            };
+            assert!(
+                matches!(structured.validate(), Err(crate::XbergError::Validation { .. })),
+                "{format} must be rejected"
+            );
+        }
+        for format in [OutputFormat::Markdown, OutputFormat::Djot, OutputFormat::Html] {
+            let text = ExtractionConfig {
+                max_content_chars: Some(10),
+                output_format: format,
+                ..Default::default()
+            };
+            assert!(text.validate().is_ok());
+        }
+
+        let positive = ExtractionConfig {
+            max_content_chars: Some(1),
+            ..Default::default()
+        };
+        assert!(positive.validate().is_ok());
+        assert!(ExtractionConfig::default().validate().is_ok());
     }
 
     #[test]

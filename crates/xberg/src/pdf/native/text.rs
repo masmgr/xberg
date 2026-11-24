@@ -127,6 +127,9 @@ pub(crate) fn extract_text_and_metadata(
         .and_then(|c| c.ocr.as_ref())
         .and_then(|o| o.quality_thresholds.clone())
         .unwrap_or_default();
+    // Grading still runs after a `max_content_chars` stop: it reads each page's images, not the
+    // text the loop left empty, and the scans among the pages read must still reach OCR. The OCR
+    // loops count the budget in page order, so they do not read the pages past it. ~keep
     let cut_short = extraction_config
         .and_then(|config| config.cancel_token.as_ref())
         .is_some_and(crate::cancellation::CancellationToken::cut_short_by_time_limit);
@@ -206,6 +209,29 @@ pub(crate) fn page_boundaries_required(config: &ExtractionConfig) -> bool {
 struct NativePageTextOptions {
     margins: PageMarginFractions,
     preserve_panel_rows: bool,
+    /// `ExtractionConfig::max_content_chars`: the loop stops before a page once the pages it read
+    /// fill it.
+    max_content_chars: Option<usize>,
+}
+
+/// Why a page loop stopped before its last page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PageLoopStop {
+    /// The extraction time limit asked for the pages read so far.
+    TimeLimit,
+    /// The pages read fill `max_content_chars`, so no later page can reach the result.
+    CharBudget,
+}
+
+impl PageLoopStop {
+    /// Record `page` (1-based) as the first page the loop left unread, under its own reason, so
+    /// the time-limit warning never names a page the character budget left.
+    fn note_unread(self, token: &crate::cancellation::CancellationToken, page: u32) {
+        match self {
+            Self::TimeLimit => token.note_unread_page(page),
+            Self::CharBudget => token.note_page_past_char_budget(page),
+        }
+    }
 }
 
 /// Extract text from a xberg_native_pdf document with optional page boundary tracking.
@@ -236,6 +262,7 @@ fn extract_text_from_native_document(
                 && !config.force_ocr
                 && !config.pdf_options.as_ref().is_some_and(|pdf| pdf.reading_order)
         }),
+        max_content_chars: extraction_config.and_then(|config| config.max_content_chars),
     };
 
     if let Some(config) = page_config {
@@ -296,8 +323,9 @@ fn extract_all_page_texts(
     })
 }
 
-/// [`extract_all_page_texts`] with the stop decision injected: `stop(page_idx)` is asked before each
-/// page, and a `true` ends the loop with the pages read so far.
+/// [`extract_all_page_texts`] with the time-limit stop decision injected: `stop(page_idx)` is asked
+/// before each page, and a `true` ends the loop with the pages read so far. The loop also ends
+/// before a page once the pages read fill `options.max_content_chars`.
 fn extract_page_texts_until(
     doc: &xberg_native_pdf::PdfDocument,
     options: NativePageTextOptions,
@@ -318,15 +346,27 @@ fn extract_page_texts_until(
     };
 
     let _page_loop = cancel_token.map(crate::cancellation::CancellationToken::enter_page_loop);
-    let mut texts = Vec::with_capacity(page_count);
+    let mut budget = crate::core::char_budget::PageOrderBudget::new(options.max_content_chars);
+    let mut texts: Vec<String> = Vec::with_capacity(page_count);
     for page_idx in 0..page_count {
         if cancel_token.is_some_and(crate::cancellation::CancellationToken::is_cancelled) {
             return Err(PdfError::Cancelled);
         }
-        // The extraction time limit asks for the pages read so far instead of a failure.
-        if stop(page_idx) {
+        // The extraction time limit asks for the pages read so far instead of a failure, and a
+        // full `max_content_chars` budget leaves nothing for the pages after it.
+        let stopped = if stop(page_idx) {
+            Some(PageLoopStop::TimeLimit)
+        } else if budget
+            .as_mut()
+            .is_some_and(|budget| budget.is_full_before(page_idx, |idx| texts[idx].chars().count()))
+        {
+            Some(PageLoopStop::CharBudget)
+        } else {
+            None
+        };
+        if let Some(reason) = stopped {
             if let Some(token) = cancel_token {
-                token.note_unread_page((page_idx + 1) as u32);
+                reason.note_unread(token, (page_idx + 1) as u32);
             }
             // Every later stage indexes pages by the document's page count, so the unread pages
             // stay in place as empty pages; the stop warning names the first of them.
@@ -417,7 +457,7 @@ fn extract_text_with_tracking(
     let (page_texts, evidence) = extract_all_page_texts(&doc.doc, options, cancel_token)?;
     let page_count = page_texts.len();
     let first_unread = cancel_token
-        .and_then(crate::cancellation::CancellationToken::first_unread_page)
+        .and_then(crate::cancellation::CancellationToken::first_page_left_unread)
         .map(|page| page as usize);
 
     let markers: Vec<String> = if config.insert_page_markers {
@@ -3350,6 +3390,10 @@ mod span_carrier_tests;
 #[cfg(all(test, feature = "tokio-runtime", not(target_arch = "wasm32")))]
 #[path = "text/time_limit_tests.rs"]
 mod time_limit_tests;
+
+#[cfg(all(test, feature = "tokio-runtime", not(target_arch = "wasm32")))]
+#[path = "text/char_budget_tests.rs"]
+mod char_budget_tests;
 
 #[cfg(test)]
 mod tests {

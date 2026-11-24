@@ -51,6 +51,12 @@ impl ExtractionOverrides {
         }
     }
 
+    pub(super) fn apply_max_content_chars(&self, config: &mut ExtractionConfig) {
+        if let Some(max_chars) = self.max_content_chars {
+            config.max_content_chars = Some(max_chars);
+        }
+    }
+
     pub(super) fn apply_jupyter_cell_rendering(&self, config: &mut ExtractionConfig) {
         if let Some(rendering) = self.jupyter_cell_rendering {
             config.jupyter_cell_rendering = rendering.into();

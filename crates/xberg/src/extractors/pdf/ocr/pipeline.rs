@@ -672,6 +672,36 @@ fn mixed_native_page_has_content(
         .is_some_and(|text| !text.trim().is_empty())
 }
 
+/// Native characters of each page (1-based) that has a byte range in `native_text`.
+#[cfg(all(any(feature = "ocr", feature = "ocr-pipeline"), feature = "pdf"))]
+fn native_chars_by_page(native_text: &str, boundaries: &[crate::types::PageBoundary]) -> ahash::AHashMap<u32, usize> {
+    boundaries
+        .iter()
+        .map(|boundary| {
+            let chars = native_text
+                .get(boundary.byte_start..boundary.byte_end)
+                .map_or(0, |text| text.chars().count());
+            (boundary.page_number, chars)
+        })
+        .collect()
+}
+
+/// Characters of the page at `page_idx` (0-based) in the mixed result as read so far: its OCR text
+/// once OCR has read it, else its native text (none for a page without a byte range, such as a
+/// scan with no text layer).
+#[cfg(all(any(feature = "ocr", feature = "ocr-pipeline"), feature = "pdf"))]
+fn mixed_page_chars(
+    native_chars: &ahash::AHashMap<u32, usize>,
+    ocr_results: &ahash::AHashMap<u32, String>,
+    page_idx: usize,
+) -> usize {
+    let page_number = (page_idx + 1) as u32;
+    match ocr_results.get(&page_number) {
+        Some(read) => read.chars().count(),
+        None => native_chars.get(&page_number).copied().unwrap_or(0),
+    }
+}
+
 #[cfg(all(feature = "ocr", feature = "pdf", not(target_arch = "wasm32")))]
 fn preceding_native_khmer_page(
     native_text: &str,
@@ -2301,13 +2331,46 @@ impl MixedOcrContext<'_> {
             .cancel_token
             .as_ref()
             .map(crate::cancellation::CancellationToken::enter_page_loop);
+        // `max_content_chars`, counted over every page (OCR'd or native) in page order. Every page
+        // before a batch is final once that batch starts.
+        let mut budget = crate::core::char_budget::PageOrderBudget::new(self.config.max_content_chars);
+        let native_chars = budget
+            .as_ref()
+            .map(|_| native_chars_by_page(self.native_text, self.boundaries))
+            .unwrap_or_default();
         for batch_start in (0..self.total).step_by(self.batch_size) {
+            // The time-limit stop in `run_page_batch` comes first, so it names its own pages.
+            if self.stop_token().is_none() && self.char_budget_full(&mut budget, &native_chars, batch_start) {
+                break;
+            }
             if !self.run_page_batch(batch_start).await? {
                 break;
             }
         }
         drop(page_loop);
         Ok(())
+    }
+
+    /// Whether the text of the pages before the batch at `batch_start` fills `max_content_chars`, so
+    /// nothing that batch or a later one reads can reach the result. Records the batch's first page
+    /// as the first page left unread when it does; those pages keep their native text and are not
+    /// reported as OCR failures. ~keep
+    fn char_budget_full(
+        &self,
+        budget: &mut Option<crate::core::char_budget::PageOrderBudget>,
+        native_chars: &ahash::AHashMap<u32, usize>,
+        batch_start: usize,
+    ) -> bool {
+        let first_page_idx = self.page_indices[batch_start];
+        let full = budget.as_mut().is_some_and(|budget| {
+            budget.is_full_before(first_page_idx, |idx| {
+                mixed_page_chars(native_chars, &self.ocr_results, idx)
+            })
+        });
+        if full && let Some(token) = self.config.cancel_token.as_ref() {
+            token.note_page_past_char_budget((first_page_idx + 1) as u32);
+        }
+        full
     }
 
     fn stop_token(&self) -> Option<crate::cancellation::CancellationToken> {
@@ -9628,6 +9691,16 @@ mod recognized_table_grid_tests;
 ))]
 #[path = "memory_recovery_tests.rs"]
 mod memory_recovery_tests;
+
+#[cfg(all(
+    test,
+    feature = "pdf",
+    feature = "tokio-runtime",
+    not(target_arch = "wasm32"),
+    any(feature = "ocr", feature = "ocr-pipeline")
+))]
+#[path = "pipeline/char_budget_stop_tests.rs"]
+mod char_budget_stop_tests;
 
 #[cfg(all(test, feature = "pdf", feature = "tokio-runtime", feature = "ocr"))]
 #[path = "xobject_budget_parity_tests.rs"]

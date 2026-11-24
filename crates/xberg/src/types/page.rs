@@ -66,6 +66,16 @@ pub struct PageBoundary {
     pub page_number: u32,
 }
 
+/// A [`PageBoundary`] for tests.
+#[cfg(test)]
+pub(crate) fn page_boundary(byte_start: usize, byte_end: usize, page_number: u32) -> PageBoundary {
+    PageBoundary {
+        byte_start,
+        byte_end,
+        page_number,
+    }
+}
+
 /// Metadata for individual page/slide/sheet.
 ///
 /// Captures per-page information including dimensions, content counts,
